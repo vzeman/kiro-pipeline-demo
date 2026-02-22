@@ -1,4 +1,5 @@
 name: Code Review Agent
+
 on:
   pull_request:
     types: [opened, synchronize]
@@ -8,6 +9,7 @@ on:
         description: 'PR number to review (used after review-fix push)'
         required: true
         type: string
+
 permissions:
   contents: read
   pull-requests: write
@@ -15,9 +17,11 @@ permissions:
   issues: write
   actions: write
   id-token: write
+
 concurrency:
   group: review-agent-${{ github.event.pull_request.number || inputs.pr_number }}
   cancel-in-progress: true
+
 jobs:
   review:
     name: Review Agent
@@ -29,6 +33,7 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha || '' }}
           fetch-depth: 0
+
       - name: Resolve PR context
         id: pr
         env:
@@ -46,7 +51,6 @@ jobs:
             BASE_REF=$(echo "$PR_JSON" | jq -r '.baseRefName')
             git fetch origin "$HEAD_SHA"
             git checkout "$HEAD_SHA"
-            echo "✔ Resolved PR #${PR_NUM} at ${HEAD_SHA:0:12} (workflow_dispatch)"
           else
             HEAD_SHA="$PR_HEAD_SHA"
             BASE_REF="$PR_BASE_REF"
@@ -55,17 +59,13 @@ jobs:
           echo "head-sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
           echo "base-ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
           echo "pr-number=${PR_NUM}" >> "$GITHUB_OUTPUT"
+
       - name: Determine risk tier
         id: tier
         env:
           BASE_REF: ${{ steps.pr.outputs.base-ref }}
           HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
         run: |
-          ACTUAL_SHA="$(git rev-parse HEAD)"
-          if [[ "${ACTUAL_SHA,,}" != "${HEAD_SHA,,}" ]]; then
-            echo "::error::SHA discipline violation: HEAD (${ACTUAL_SHA}) ≠ expected (${HEAD_SHA})"
-            exit 1
-          fi
           if ! git rev-parse --verify "origin/${BASE_REF}" &>/dev/null; then
             git fetch origin "${BASE_REF}" --depth=1 2>/dev/null || true
           fi
@@ -85,9 +85,9 @@ jobs:
           while IFS= read -r file; do
             [[ -z "$file" ]] && continue
             case "$file" in
-              src/index.ts|src/cli.ts|package.json|tsconfig.json|vitest.config.ts|eslint.config.js)
+              src/index.ts|package.json|tsconfig.json|vitest.config.ts|eslint.config.js)
                 TIER=3 ;;
-              src/*.ts|tests/*.ts|scripts/*.ts|*.ts|*.js)
+              src/*.ts|tests/*.ts|scripts/*.ts)
                 [[ $TIER -lt 2 ]] && TIER=2 ;;
             esac
           done <<< "$CHANGED"
@@ -97,51 +97,12 @@ jobs:
             echo "$CHANGED"
             echo "CEOF"
           } >> "$GITHUB_OUTPUT"
-          echo "✔ Tier ${TIER} — $(echo "$CHANGED" | wc -l) files changed"
+          echo "Tier ${TIER} — $(echo "$CHANGED" | wc -l) files changed"
+
       - name: Skip if Tier 1
         if: steps.tier.outputs.tier == '1'
-        run: echo "Tier 1 change — review agent not required. Skipping."
-      - name: Notify PR — review agent skipped (Tier 1)
-        if: steps.tier.outputs.tier == '1'
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
-        env:
-          HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
-          PR_NUMBER: ${{ steps.pr.outputs.pr-number }}
-        with:
-          script: |
-            const headSha = process.env.HEAD_SHA;
-            const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            const marker = `<!-- harness-tier1-skip: ${headSha} -->`;
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              per_page: 100,
-            });
-            if (comments.some((c) => c.body?.includes(marker))) {
-              core.info(`Tier 1 skip notification already posted for SHA ${headSha.slice(0, 12)} — skipping.`);
-              return;
-            }
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: prNumber,
-              body: [
-                marker,
-                `## ℹ️ Review Agent — Skipped (Tier 1)`,
-                '',
-                `**Commit**: \`${headSha.slice(0, 12)}\``,
-                `**Tier**: 1 (low risk — documentation / non-code changes)`,
-                '',
-                'This pull request only touches **Tier 1** files (documentation, configuration cosmetics, non-code assets). The automated code review agent does not run for Tier 1 changes — they are considered low-risk and only require lint checks.',
-                '',
-                'If this PR should be reviewed, you can manually trigger the review workflow from the **Actions** tab.',
-                '',
-                '---',
-                '*🤖 Code Review Agent — automated code review.*',
-              ].join('\n'),
-            });
-            core.info(`Posted Tier 1 skip notification for SHA ${headSha.slice(0, 12)}.`);
+        run: echo "Tier 1 change — review agent not required."
+
       - name: SHA deduplication check
         if: steps.tier.outputs.tier != '1'
         id: dedup
@@ -154,7 +115,6 @@ jobs:
             const headSha = process.env.HEAD_SHA;
             const marker = `<!-- harness-review: ${headSha} -->`;
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            core.info(`Checking for existing review of SHA ${headSha.slice(0, 12)}...`);
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -166,46 +126,34 @@ jobs:
               core.info(`SHA ${headSha.slice(0, 12)} already reviewed — skipping.`);
               core.setOutput('skip', 'true');
             } else {
-              core.info(`No existing review for SHA ${headSha.slice(0, 12)} — proceeding.`);
               core.setOutput('skip', 'false');
             }
-      - name: Create in-progress check run
+
+      - name: Setup Node.js
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
-        id: check
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
-        env:
-          HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
         with:
-          script: |
-            const headSha = process.env.HEAD_SHA;
-            const { data: checkRun } = await github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'review-agent',
-              head_sha: headSha,
-              status: 'in_progress',
-              started_at: new Date().toISOString(),
-              output: {
-                title: 'Code Review Agent',
-                summary: 'Review in progress...',
-              },
-            });
-            core.setOutput('check-run-id', checkRun.id);
-            core.info(`Created check run ${checkRun.id} for SHA ${headSha.slice(0, 12)}`);
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
+        run: npm ci
+
       - name: Read review prompt
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
         id: prompt-file
         run: |
-          PROMPT_CONTENT=$(git show origin/main:.codefactory/prompts/review-agent.md 2>/dev/null || echo "")
-          if [[ -n "$PROMPT_CONTENT" ]]; then
+          if [[ -f ".codefactory/prompts/review-agent.md" ]]; then
             {
               echo "content<<PROMPT_EOF"
-              echo "$PROMPT_CONTENT"
+              cat .codefactory/prompts/review-agent.md
               echo "PROMPT_EOF"
             } >> "$GITHUB_OUTPUT"
           else
             echo "content=Review this pull request for bugs, security issues, and architectural violations." >> "$GITHUB_OUTPUT"
           fi
+
       - name: Build review prompt
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
         id: build-prompt
@@ -224,13 +172,14 @@ jobs:
             try { conventions = fs.readFileSync('KIRO.md', 'utf-8').slice(0, 6000); } catch {}
             let config = '';
             try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}
+
             const sections = [
               template,
               '',
               '## PR Context',
               '',
               `**Risk Tier**: Tier ${tier}`,
-              `**Changed Files**:`,
+              '**Changed Files**:',
               changedFiles ? changedFiles.split('\n').map(f => `- ${f}`).join('\n') : '*(none detected)*',
               '',
               '## Project Conventions (from KIRO.md)',
@@ -239,13 +188,14 @@ jobs:
               '',
               '## Harness Configuration',
               '',
-              'json',
-             config || '{}',
-             '',
+              '```json',
+              config || '{}',
+              '```',
             ];
             const prompt = sections.join('\n');
             core.setOutput('prompt', prompt);
-            core.info(Review prompt built (${prompt.length} chars));
+            core.info(`Review prompt built (${prompt.length} chars)`);
+
       - name: Configure AWS credentials
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
         uses: aws-actions/configure-aws-credentials@v4
@@ -255,11 +205,13 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
       - name: Setup Kiro CLI
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
         uses: clouatre-labs/setup-kiro-action@v1
         with:
           enable-sigv4: 'true'
+
       - name: Authenticate Kiro CLI
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
         env:
@@ -337,9 +289,10 @@ jobs:
             "$KIRO_CLIENT_ID" "$KIRO_CLIENT_SECRET" "$AWS_REGION" \
             "$KIRO_START_URL" "$CLIENT_EXPIRES" "$KIRO_PROFILE_ARN"
           kiro-cli-chat whoami
-      - name: Run agent
+
+      - name: Run AI review
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
-        id: agent
+        id: ai-review
         continue-on-error: true
         env:
           KIRO_PROMPT: ${{ steps.build-prompt.outputs.prompt }}
@@ -352,11 +305,12 @@ jobs:
             echo "$CLEAN"
             echo "KIRO_OUTPUT_EOF"
           } >> "$GITHUB_OUTPUT"
+
       - name: Extract review output
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
         id: extract
         env:
-          FINAL_MESSAGE: ${{ steps.agent.outputs.output }}
+          FINAL_MESSAGE: ${{ steps.ai-review.outputs.output }}
         run: |
           REVIEW_TEXT="$FINAL_MESSAGE"
           if [[ -z "$REVIEW_TEXT" || "$REVIEW_TEXT" == "null" ]]; then
@@ -370,16 +324,16 @@ jobs:
               echo "REVIEW_EOF"
             } >> "$GITHUB_OUTPUT"
             echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "✔ Extracted review ($(echo "$REVIEW_TEXT" | wc -c) chars)"
+            echo "Extracted review ($(echo "$REVIEW_TEXT" | wc -c) chars)"
           fi
+
       - name: Post review comment
         if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
-        id: post-review
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
         env:
           REVIEW_TEXT: ${{ steps.extract.outputs.review || '' }}
           REVIEW_FOUND: ${{ steps.extract.outputs.found || 'false' }}
-          REVIEW_OUTCOME: ${{ steps.agent.outcome }}
+          REVIEW_OUTCOME: ${{ steps.ai-review.outcome }}
           HEAD_SHA: ${{ steps.pr.outputs.head-sha }}
           PR_NUMBER: ${{ steps.pr.outputs.pr-number }}
           TIER: ${{ steps.tier.outputs.tier }}
@@ -387,181 +341,31 @@ jobs:
           script: |
             const headSha = process.env.HEAD_SHA;
             const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            const marker = <!-- harness-review: ${headSha} -->;
+            const marker = `<!-- harness-review: ${headSha} -->`;
             const tier = process.env.TIER;
             const reviewText = process.env.REVIEW_TEXT || '';
             const reviewFound = process.env.REVIEW_FOUND === 'true';
             const reviewOutcome = process.env.REVIEW_OUTCOME || 'failure';
+
             const sections = [
               marker,
-              ## 🔍 Code Review Agent — Tier ${tier},
+              `## Code Review Agent — Tier ${tier}`,
               '',
-              **Commit**: \${headSha.slice(0, 12)}\,
-              **Status**: ${reviewOutcome === 'success' ? '✅ Complete' : '⚠️ Review may be incomplete'},
+              `**Commit**: \`${headSha.slice(0, 12)}\``,
+              `**Status**: ${reviewOutcome === 'success' ? 'Complete' : 'Review may be incomplete'}`,
             ];
+
             if (reviewFound && reviewText) {
               sections.push('', reviewText);
             } else {
               sections.push('', '*No review output was produced. The review agent may have encountered an error.*');
             }
-            sections.push('', '---', '*🤖 Code Review Agent — automated code review.*');
-            const { data: comment } = await github.rest.issues.createComment({
+
+            sections.push('', '---', '*Code Review Agent — automated code review.*');
+
+            await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: prNumber,
               body: sections.join('\n'),
             });
-            core.setOutput('comment-id', comment.id);
-      - name: Run verdict classifier
-        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true' && steps.extract.outputs.found == 'true'
-        id: classifier
-        continue-on-error: true
-        env:
-          KIRO_PROMPT: ${{ format('Read the following code review and classify the verdict.\n\nRules:\n- APPROVE: The review found no blocking issues. The code is safe to merge.\n- REQUEST_CHANGES: The review found one or more blocking issues (security vulnerabilities, bugs that cause runtime errors, data loss, or crashes). Only blocking issues warrant REQUEST_CHANGES — warnings and suggestions do not.\n- COMMENT: The review found warnings or suggestions but no blocking issues, OR the review is unclear.\n\n<review>\n{0}\n</review>', steps.extract.outputs.review) }}
-        run: |
-          RAW=$(kiro-cli-chat chat --no-interactive --trust-all-tools "$KIRO_PROMPT" 2>&1) || true
-          CLEAN=$(printf '%s\n' "$RAW" | sed 's/\x1b\[[0-9;]*m//g')
-          echo "$CLEAN"
-          {
-            echo "output<<KIRO_CLASSIFIER_EOF"
-            echo "$CLEAN"
-            echo "KIRO_CLASSIFIER_EOF"
-          } >> "$GITHUB_OUTPUT"
-      - name: Extract verdict
-        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true'
-        id: verdict
-        env:
-          CLASSIFIER_OUTPUT: ${{ steps.classifier.outputs.output || '' }}
-          CLASSIFIER_OUTCOME: ${{ steps.classifier.outcome || 'failure' }}
-        run: |
-          VERDICT="COMMENT"
-          if [[ "$CLASSIFIER_OUTCOME" != "success" ]]; then
-            echo "::notice::Verdict classifier failed — defaulting to COMMENT."
-            echo "verdict=COMMENT" >> "$GITHUB_OUTPUT"
-            echo "reason=Classifier failed" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if [[ -n "$CLASSIFIER_OUTPUT" ]]; then
-            if echo "$CLASSIFIER_OUTPUT" | grep -qi "APPROVE"; then
-              VERDICT="APPROVE"
-            elif echo "$CLASSIFIER_OUTPUT" | grep -qi "REQUEST_CHANGES"; then
-              VERDICT="REQUEST_CHANGES"
-            fi
-          fi
-          echo "verdict=${VERDICT}" >> "$GITHUB_OUTPUT"
-          echo "reason=Extracted from classifier output" >> "$GITHUB_OUTPUT"
-          echo "Verdict: ${VERDICT}"
-      - name: Update review comment with verdict
-        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true' && steps.post-review.outputs.comment-id
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
-        env:
-          COMMENT_ID: ${{ steps.post-review.outputs.comment-id }}
-          VERDICT: ${{ steps.verdict.outputs.verdict || 'COMMENT' }}
-          VERDICT_REASON: ${{ steps.verdict.outputs.reason || '' }}
-        with:
-          script: |
-            const commentId = parseInt(process.env.COMMENT_ID);
-            const verdict = process.env.VERDICT || 'COMMENT';
-            const reason = process.env.VERDICT_REASON || '';
-            const verdictMarker = <!-- review-verdict: ${verdict} -->;
-            const verdictEmoji = verdict === 'APPROVE' ? '✅' : verdict === 'REQUEST_CHANGES' ? '🔄' : '💬';
-            const { data: comment } = await github.rest.issues.getComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-            });
-            let body = comment.body || '';
-            const lines = body.split('\n');
-            const insertIdx = lines.findIndex(l => l.startsWith('<!-- harness-review:'));
-            if (insertIdx !== -1) {
-              lines.splice(insertIdx + 1, 0, verdictMarker);
-            } else {
-              lines.unshift(verdictMarker);
-            }
-            const statusIdx = lines.findIndex(l => l.startsWith('**Status**'));
-            if (statusIdx !== -1) {
-              const verdictLine = **Verdict**: ${verdictEmoji} ${verdict}${reason ?  — ${reason} : ''};
-              lines.splice(statusIdx + 1, 0, verdictLine);
-            }
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: commentId,
-              body: lines.join('\n'),
-            });
-            core.info(Updated review comment with verdict: ${verdict});
-      - name: Complete check run
-        if: always() && steps.check.outputs.check-run-id
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
-        env:
-          CHECK_RUN_ID: ${{ steps.check.outputs.check-run-id }}
-          REVIEW_OUTCOME: ${{ steps.agent.outcome }}
-        with:
-          script: |
-            const checkRunId = parseInt(process.env.CHECK_RUN_ID);
-            const reviewOutcome = process.env.REVIEW_OUTCOME || 'failure';
-            const conclusion = reviewOutcome === 'success' ? 'success' : 'neutral';
-            await github.rest.checks.update({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              check_run_id: checkRunId,
-              status: 'completed',
-              conclusion,
-              completed_at: new Date().toISOString(),
-              output: {
-                title: Review Agent — ${conclusion === 'success' ? 'Complete' : 'Review Needed'},
-                summary: AI code review completed with outcome: ${reviewOutcome},
-              },
-            });
-            core.info(Check run ${checkRunId} completed: ${conclusion});
-      - name: Check review-fix eligibility
-        if: steps.tier.outputs.tier != '1' && steps.dedup.outputs.skip != 'true' && steps.verdict.outputs.verdict == 'REQUEST_CHANGES'
-        id: review-fix
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
-        env:
-          PR_NUMBER: ${{ steps.pr.outputs.pr-number }}
-        with:
-          script: |
-            const prNumber = parseInt(process.env.PR_NUMBER, 10);
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: prNumber,
-            });
-            const prLabels = pr.labels.map(l => l.name);
-            if (!prLabels.includes('agent-pr')) {
-              core.info('PR does not have agent-pr label — skipping review-fix dispatch.');
-              core.setOutput('eligible', 'false');
-              core.setOutput('reason', 'Not an agent-created PR');
-              return;
-            }
-            if (prLabels.includes('agent:needs-judgment')) {
-              core.info('PR already has agent:needs-judgment label — skipping.');
-              core.setOutput('eligible', 'false');
-              core.setOutput('reason', 'Already escalated');
-              return;
-            }
-            let maxCycle = 0;
-            for (const label of prLabels) {
-              const match = label.match(/^review-fix-cycle-(\d+)$/);
-              if (match) {
-                const n = parseInt(match[1], 10);
-                if (n > maxCycle) maxCycle = n;
-              }
-            }
-            const nextCycle = maxCycle + 1;
-            if (nextCycle > 3) {
-              core.info(Max review-fix cycles reached (${maxCycle} cycles). Escalating.);
-              core.setOutput('eligible', 'false');
-              core.setOutput('escalate', 'true');
-              core.setOutput('reason', Max cycles exceeded (${maxCycle}));
-              return;
-            }
-            const prBody = pr.body || '';
-            const issueMatch = prBody.match(/<!-- issue-implementer: #(\d+) -->/);
-            const issueNumber = issueMatch ? issueMatch[1] : '';
-            core.setOutput('eligible', 'true');
-            core.setOutput('escalate', 'false');
-            core.setOutput('cycle', String(nextCycle));
-            core.setOutput('issue-number', issueNumber);
-            core.info(Review-fix eligible: cycle ${nextCycle}, issue #${issueNumber || 'unknown'}

@@ -33,9 +33,3 @@ Step-by-step description of the implementation approach. Be specific about:
 - If the issue is unclear or underspecified, note what assumptions you are making
 - Consider the project's architectural boundaries when planning changes
 Return ONLY the structured plan. No markdown fences around the entire output, no extra commentary.
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-
-All three files are production-ready and follow the harness engineering principles: evidence-based generation, conciseness, SHA discipline, and agent-first design. The workflow uses exact commit SHAs for all actions, proper env: blocks for shell safety, and explicit workflow dispatch for event chaining.

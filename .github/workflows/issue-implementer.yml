@@ -1,0 +1,501 @@
+name: Issue Implementer Agent
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to implement'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+  actions: write
+  id-token: write
+
+concurrency:
+  group: issue-implementer-${{ github.event.issue.number || inputs.issue_number }}
+  cancel-in-progress: false
+
+jobs:
+  implement:
+    name: Implementer Agent
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Fetch issue JSON (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        id: fetch-issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE_NUM: ${{ inputs.issue_number }}
+        run: |
+          ISSUE_DATA=$(gh issue view "$ISSUE_NUM" --json number,title,body,labels,author \
+            | jq '{number, title, body, labels, user: {login: .author.login}}')
+          {
+            echo "json<<ISSUE_EOF"
+            echo "$ISSUE_DATA"
+            echo "ISSUE_EOF"
+          } >> "$GITHUB_OUTPUT"
+          echo "Fetched issue #${ISSUE_NUM}"
+
+      - name: Run implementer guard
+        id: guard
+        env:
+          ISSUE_JSON: ${{ github.event_name == 'workflow_dispatch' && steps.fetch-issue.outputs.json || toJSON(github.event.issue) }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DECISION=$(npx tsx scripts/issue-implementer-guard.ts --evaluate)
+          {
+            echo "decision<<GUARD_EOF"
+            echo "$DECISION"
+            echo "GUARD_EOF"
+          } >> "$GITHUB_OUTPUT"
+          SHOULD=$(echo "$DECISION" | jq -r '.shouldImplement')
+          REASON=$(echo "$DECISION" | jq -r '.reason')
+          BRANCH=$(echo "$DECISION" | jq -r '.branchName')
+          ISSUE_NUM=$(echo "$DECISION" | jq -r '.issueNumber')
+          ISSUE_TITLE=$(echo "$DECISION" | jq -r '.issueTitle')
+          echo "should-implement=${SHOULD}" >> "$GITHUB_OUTPUT"
+          echo "reason=${REASON}" >> "$GITHUB_OUTPUT"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+          echo "issue-number=${ISSUE_NUM}" >> "$GITHUB_OUTPUT"
+          echo "issue-title=${ISSUE_TITLE}" >> "$GITHUB_OUTPUT"
+          echo "Guard: shouldImplement=${SHOULD}, branch=${BRANCH}, issue=#${ISSUE_NUM}"
+
+      - name: Skip — log reason
+        if: steps.guard.outputs.should-implement == 'false'
+        run: |
+          echo "::notice::Implementation skipped: ${{ steps.guard.outputs.reason }}"
+
+      - name: Post starting comment
+        if: steps.guard.outputs.should-implement == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          ISSUE_NUMBER: ${{ steps.guard.outputs.issue-number }}
+          BRANCH: ${{ steps.guard.outputs.branch }}
+        with:
+          script: |
+            const issueNumber = parseInt(process.env.ISSUE_NUMBER, 10);
+            const branch = process.env.BRANCH;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                `<!-- issue-implementer-start: #${issueNumber} -->`,
+                '## Implementation Agent Starting',
+                '',
+                `Working on branch \`${branch}\`...`,
+                '',
+                `**Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                '',
+                '---',
+                '*Issue Implementer Agent — automated implementation.*',
+              ].join('\n'),
+            });
+
+      - name: Create implementation branch
+        if: steps.guard.outputs.should-implement == 'true'
+        env:
+          BRANCH: ${{ steps.guard.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+        run: |
+          git fetch origin "${DEFAULT_BRANCH}"
+          git checkout -b "${BRANCH}" "origin/${DEFAULT_BRANCH}"
+          echo "Created branch: ${BRANCH}"
+
+      - name: Baseline validation
+        if: steps.guard.outputs.should-implement == 'true'
+        id: baseline
+        run: |
+          LINT_OK="true"
+          TYPE_OK="true"
+          TEST_OK="true"
+          BUILD_OK="true"
+
+          npm run lint 2>&1 || LINT_OK="false"
+          npx tsc --noEmit 2>&1 || TYPE_OK="false"
+          npm test 2>&1 || TEST_OK="false"
+          npm run build 2>&1 || BUILD_OK="false"
+
+          echo "lint=${LINT_OK}" >> "$GITHUB_OUTPUT"
+          echo "type-check=${TYPE_OK}" >> "$GITHUB_OUTPUT"
+          echo "test=${TEST_OK}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD_OK}" >> "$GITHUB_OUTPUT"
+          echo "Baseline: lint=${LINT_OK} type=${TYPE_OK} test=${TEST_OK} build=${BUILD_OK}"
+
+      - name: Read implementer prompt
+        if: steps.guard.outputs.should-implement == 'true'
+        id: prompt-file
+        run: |
+          if [[ -f ".codefactory/prompts/issue-implementer.md" ]]; then
+            {
+              echo "content<<PROMPT_EOF"
+              cat .codefactory/prompts/issue-implementer.md
+              echo "PROMPT_EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "content=Implement the feature or fix described in the issue." >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build implementation prompt
+        if: steps.guard.outputs.should-implement == 'true'
+        id: build-prompt
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          IMPLEMENTER_TEMPLATE: ${{ steps.prompt-file.outputs.content }}
+          ISSUE_JSON: ${{ github.event_name == 'workflow_dispatch' && steps.fetch-issue.outputs.json || toJSON(github.event.issue) }}
+          BASELINE_LINT: ${{ steps.baseline.outputs.lint }}
+          BASELINE_TYPE: ${{ steps.baseline.outputs.type-check }}
+          BASELINE_TEST: ${{ steps.baseline.outputs.test }}
+          BASELINE_BUILD: ${{ steps.baseline.outputs.build }}
+        with:
+          script: |
+            const fs = require('fs');
+            const issue = JSON.parse(process.env.ISSUE_JSON || '{}');
+            const template = process.env.IMPLEMENTER_TEMPLATE || '';
+            let conventions = '';
+            try { conventions = fs.readFileSync('KIRO.md', 'utf-8').slice(0, 6000); } catch {}
+            let config = '';
+            try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}
+
+            const prompt = [
+              template,
+              '',
+              '## Issue to Implement',
+              '',
+              `**Number**: #${issue.number}`,
+              `**Title**: ${issue.title}`,
+              `**Author**: ${(issue.user || {}).login || 'unknown'}`,
+              '',
+              '### Body',
+              '',
+              issue.body || '*(empty body)*',
+              '',
+              '## Baseline Quality Gate Status',
+              '',
+              `| Check | Baseline |`,
+              `|-------|----------|`,
+              `| Lint | ${process.env.BASELINE_LINT === 'true' ? 'PASS' : 'FAIL'} |`,
+              `| Type Check | ${process.env.BASELINE_TYPE === 'true' ? 'PASS' : 'FAIL'} |`,
+              `| Tests | ${process.env.BASELINE_TEST === 'true' ? 'PASS' : 'FAIL'} |`,
+              `| Build | ${process.env.BASELINE_BUILD === 'true' ? 'PASS' : 'FAIL'} |`,
+              '',
+              'Do NOT regress any checks that are currently passing.',
+              '',
+              '## Project Conventions (from KIRO.md)',
+              '',
+              conventions || 'No KIRO.md found.',
+            ].join('\n');
+
+            core.setOutput('prompt', prompt);
+            core.info(`Implementation prompt built (${prompt.length} chars)`);
+
+      - name: Configure AWS credentials
+        if: steps.guard.outputs.should-implement == 'true'
+        continue-on-error: true
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
+      - name: Setup Kiro CLI
+        if: steps.guard.outputs.should-implement == 'true'
+        uses: clouatre-labs/setup-kiro-action@v1
+        with:
+          enable-sigv4: 'true'
+
+      - name: Authenticate Kiro CLI
+        if: steps.guard.outputs.should-implement == 'true'
+        env:
+          KIRO_CLIENT_ID: ${{ secrets.KIRO_CLIENT_ID }}
+          KIRO_CLIENT_SECRET: ${{ secrets.KIRO_CLIENT_SECRET }}
+          KIRO_REFRESH_TOKEN: ${{ secrets.KIRO_REFRESH_TOKEN }}
+          KIRO_PROFILE_ARN: ${{ secrets.KIRO_PROFILE_ARN }}
+          KIRO_START_URL: ${{ secrets.KIRO_START_URL || '' }}
+          AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+        run: |
+          RESPONSE=$(curl -s -X POST \
+            "https://oidc.${AWS_REGION}.amazonaws.com/token" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"grantType\": \"refresh_token\",
+              \"clientId\": \"${KIRO_CLIENT_ID}\",
+              \"clientSecret\": \"${KIRO_CLIENT_SECRET}\",
+              \"refreshToken\": \"${KIRO_REFRESH_TOKEN}\"
+            }")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.accessToken // empty')
+          NEW_REFRESH=$(echo "$RESPONSE" | jq -r '.refreshToken // empty')
+          if [[ -z "$ACCESS_TOKEN" ]]; then
+            echo "::error::Kiro OIDC token refresh failed"
+            echo "$RESPONSE" | jq . 2>/dev/null || echo "$RESPONSE"
+            exit 1
+          fi
+          echo "::add-mask::${ACCESS_TOKEN}"
+          echo "::add-mask::${NEW_REFRESH}"
+          mkdir -p ~/.local/share/kiro-cli
+          EXPIRES_AT=$(date -u -d "+3600 seconds" +"%Y-%m-%dT%H:%M:%S.%6NZ")
+          CLIENT_EXPIRES=$(date -u -d "+90 days" +"%Y-%m-%dT%H:%M:%S.000Z")
+          python3 -c "
+          import sqlite3, json, sys, os, time
+          db = os.path.expanduser('~/.local/share/kiro-cli/data.sqlite3')
+          conn = sqlite3.connect(db)
+          c = conn.cursor()
+          c.executescript('''
+            CREATE TABLE IF NOT EXISTS migrations (
+              id INTEGER PRIMARY KEY, version INTEGER NOT NULL,
+              migration_time INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS auth_kv (
+              key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS state (
+              key TEXT PRIMARY KEY, value BLOB);
+            CREATE TABLE IF NOT EXISTS history (
+              id INTEGER PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS conversations (
+              key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS conversations_v2 (
+              key TEXT NOT NULL, conversation_id TEXT NOT NULL,
+              value TEXT NOT NULL, created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              PRIMARY KEY (key, conversation_id));
+          ''')
+          now = int(time.time())
+          for i in range(9):
+            c.execute('INSERT OR IGNORE INTO migrations VALUES (?,?,?)', (i+1,i,now))
+          token = json.dumps({'access_token': sys.argv[1], 'expires_at': sys.argv[2],
+            'refresh_token': sys.argv[3], 'region': sys.argv[6],
+            'start_url': sys.argv[7] or '', 'oauth_flow': 'Pkce',
+            'scopes': ['codewhisperer:completions','codewhisperer:analysis','codewhisperer:conversations']})
+          reg = json.dumps({'client_id': sys.argv[4], 'client_secret': sys.argv[5],
+            'client_secret_expires_at': sys.argv[8], 'region': sys.argv[6],
+            'oauth_flow': 'Pkce', 'scopes': ['codewhisperer:completions',
+            'codewhisperer:analysis','codewhisperer:conversations']})
+          c.execute('INSERT OR REPLACE INTO auth_kv VALUES (?,?)', ('kirocli:odic:token', token))
+          c.execute('INSERT OR REPLACE INTO auth_kv VALUES (?,?)', ('kirocli:odic:device-registration', reg))
+          if sys.argv[9]:
+            profile = json.dumps({'arn': sys.argv[9], 'profile_name': sys.argv[9].split('/')[-1]})
+            c.execute('INSERT OR REPLACE INTO state VALUES (?,?)', ('api.codewhisperer.profile', profile))
+          c.execute('INSERT OR REPLACE INTO state VALUES (?,?)', ('profile.Migrated', '1'))
+          conn.commit()
+          conn.close()
+          " "$ACCESS_TOKEN" "$EXPIRES_AT" "$NEW_REFRESH" \
+            "$KIRO_CLIENT_ID" "$KIRO_CLIENT_SECRET" "$AWS_REGION" \
+            "$KIRO_START_URL" "$CLIENT_EXPIRES" "$KIRO_PROFILE_ARN"
+          kiro-cli-chat whoami
+
+      - name: Run AI implementation
+        if: steps.guard.outputs.should-implement == 'true'
+        id: ai-implement
+        env:
+          KIRO_PROMPT: ${{ steps.build-prompt.outputs.prompt }}
+        run: |
+          RAW=$(kiro-cli-chat chat --no-interactive --trust-all-tools "$KIRO_PROMPT" 2>&1) || true
+          CLEAN=$(printf '%s\n' "$RAW" | sed 's/\x1b\[[0-9;]*m//g')
+          echo "$CLEAN"
+          {
+            echo "output<<KIRO_OUTPUT_EOF"
+            echo "$CLEAN"
+            echo "KIRO_OUTPUT_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Check for changes
+        if: steps.guard.outputs.should-implement == 'true'
+        id: changes
+        run: |
+          # Revert any protected files the agent may have touched
+          for f in .github/workflows/* harness.config.json KIRO.md package-lock.json; do
+            if git diff --name-only | grep -q "^${f}$" 2>/dev/null; then
+              git checkout -- "${f}" 2>/dev/null || true
+              echo "::warning::Reverted protected file: ${f}"
+            fi
+          done
+
+          CHANGED=$(git diff --name-only)
+          UNTRACKED=$(git ls-files --others --exclude-standard)
+          ALL_CHANGES=$(printf '%s\n%s' "$CHANGED" "$UNTRACKED" | sort -u | grep -v '^$' || true)
+
+          if [[ -z "$ALL_CHANGES" ]]; then
+            echo "has-changes=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No file changes detected after agent execution"
+          else
+            echo "has-changes=true" >> "$GITHUB_OUTPUT"
+            COUNT=$(echo "$ALL_CHANGES" | wc -l | tr -d ' ')
+            echo "file-count=${COUNT}" >> "$GITHUB_OUTPUT"
+            echo "Changes detected: ${COUNT} files"
+            echo "$ALL_CHANGES"
+          fi
+
+      - name: Quality gates
+        if: steps.guard.outputs.should-implement == 'true' && steps.changes.outputs.has-changes == 'true'
+        id: gates
+        env:
+          BASELINE_LINT: ${{ steps.baseline.outputs.lint }}
+          BASELINE_TYPE: ${{ steps.baseline.outputs.type-check }}
+          BASELINE_TEST: ${{ steps.baseline.outputs.test }}
+          BASELINE_BUILD: ${{ steps.baseline.outputs.build }}
+        run: |
+          REGRESSIONS=""
+
+          LINT_OK="true"
+          npm run lint 2>&1 || LINT_OK="false"
+          if [[ "$BASELINE_LINT" == "true" && "$LINT_OK" == "false" ]]; then
+            REGRESSIONS="${REGRESSIONS}lint,"
+          fi
+
+          TYPE_OK="true"
+          npx tsc --noEmit 2>&1 || TYPE_OK="false"
+          if [[ "$BASELINE_TYPE" == "true" && "$TYPE_OK" == "false" ]]; then
+            REGRESSIONS="${REGRESSIONS}type-check,"
+          fi
+
+          TEST_OK="true"
+          npm test 2>&1 || TEST_OK="false"
+          if [[ "$BASELINE_TEST" == "true" && "$TEST_OK" == "false" ]]; then
+            REGRESSIONS="${REGRESSIONS}test,"
+          fi
+
+          BUILD_OK="true"
+          npm run build 2>&1 || BUILD_OK="false"
+          if [[ "$BASELINE_BUILD" == "true" && "$BUILD_OK" == "false" ]]; then
+            REGRESSIONS="${REGRESSIONS}build,"
+          fi
+
+          echo "lint=${LINT_OK}" >> "$GITHUB_OUTPUT"
+          echo "type-check=${TYPE_OK}" >> "$GITHUB_OUTPUT"
+          echo "test=${TEST_OK}" >> "$GITHUB_OUTPUT"
+          echo "build=${BUILD_OK}" >> "$GITHUB_OUTPUT"
+          echo "regressions=${REGRESSIONS}" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "$REGRESSIONS" ]]; then
+            echo "::warning::Quality gate regressions detected: ${REGRESSIONS}"
+          else
+            echo "All quality gates passed (no regressions)"
+          fi
+
+      - name: Create PR
+        if: steps.guard.outputs.should-implement == 'true' && steps.changes.outputs.has-changes == 'true'
+        id: create-pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ steps.guard.outputs.branch }}
+          ISSUE_NUMBER: ${{ steps.guard.outputs.issue-number }}
+          ISSUE_TITLE: ${{ steps.guard.outputs.issue-title }}
+          LINT: ${{ steps.gates.outputs.lint }}
+          TYPE_CHECK: ${{ steps.gates.outputs.type-check }}
+          TEST: ${{ steps.gates.outputs.test }}
+          BUILD: ${{ steps.gates.outputs.build }}
+          REGRESSIONS: ${{ steps.gates.outputs.regressions }}
+          FILE_COUNT: ${{ steps.changes.outputs.file-count }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "feat: implement #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
+          git push origin "${BRANCH}"
+
+          LINT_STATUS=$([[ "$LINT" == "true" ]] && echo "PASS" || echo "FAIL")
+          TYPE_STATUS=$([[ "$TYPE_CHECK" == "true" ]] && echo "PASS" || echo "FAIL")
+          TEST_STATUS=$([[ "$TEST" == "true" ]] && echo "PASS" || echo "FAIL")
+          BUILD_STATUS=$([[ "$BUILD" == "true" ]] && echo "PASS" || echo "FAIL")
+
+          BODY=$(printf '<!-- issue-implementer: #%s -->\n\n## Summary\n\nAutomated implementation for #%s — %s\n\n## Quality Gates\n\n| Check | Status |\n|-------|--------|\n| Lint | %s |\n| Type Check | %s |\n| Tests | %s |\n| Build | %s |\n\n**Files changed**: %s\n\nCloses #%s' \
+            "$ISSUE_NUMBER" "$ISSUE_NUMBER" "$ISSUE_TITLE" \
+            "$LINT_STATUS" "$TYPE_STATUS" "$TEST_STATUS" "$BUILD_STATUS" \
+            "$FILE_COUNT" "$ISSUE_NUMBER")
+
+          PR_URL=$(gh pr create \
+            --title "feat: ${ISSUE_TITLE}" \
+            --body "$BODY" \
+            --label "agent-pr" \
+            --head "${BRANCH}" 2>&1)
+
+          echo "pr-url=${PR_URL}" >> "$GITHUB_OUTPUT"
+          echo "PR created: ${PR_URL}"
+
+      - name: Post PR link on issue
+        if: steps.guard.outputs.should-implement == 'true' && steps.create-pr.outputs.pr-url
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          ISSUE_NUMBER: ${{ steps.guard.outputs.issue-number }}
+          PR_URL: ${{ steps.create-pr.outputs.pr-url }}
+        with:
+          script: |
+            const issueNumber = parseInt(process.env.ISSUE_NUMBER, 10);
+            const prUrl = process.env.PR_URL;
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                `<!-- issue-implementer: #${issueNumber} -->`,
+                '## Implementation Complete',
+                '',
+                `Pull request created: ${prUrl}`,
+                '',
+                '---',
+                '*Issue Implementer Agent — automated implementation.*',
+              ].join('\n'),
+            });
+
+      - name: Failure handler
+        if: failure() && steps.guard.outputs.should-implement == 'true'
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
+        env:
+          ISSUE_NUMBER: ${{ steps.guard.outputs.issue-number }}
+        with:
+          script: |
+            const issueNumber = parseInt(process.env.ISSUE_NUMBER, 10);
+            try {
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: 'agent:needs-judgment',
+                color: 'E4E669',
+                description: 'Agent needs human judgment to proceed',
+              });
+            } catch {}
+            await github.rest.issues.addLabels({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              labels: ['agent:needs-judgment'],
+            });
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issueNumber,
+              body: [
+                `<!-- issue-implementer-failed: #${issueNumber} -->`,
+                '## Implementer Agent Failed',
+                '',
+                'The implementation agent encountered an error.',
+                'A human should review the failure and decide next steps.',
+                '',
+                `**Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+                '',
+                '---',
+                '*Issue Implementer Agent — automated implementation.*',
+              ].join('\n'),
+            });

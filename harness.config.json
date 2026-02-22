@@ -228,7 +228,11 @@
       "name": "issue-triage",
       "enabled": true,
       "generatedAt": "2026-02-22T17:40:44.677Z",
-      "files": []
+      "files": [
+        ".codefactory/prompts/issue-triage.md",
+        ".github/workflows/issue-triage.yml",
+        "scripts/issue-triage-guard.ts"
+      ]
     },
     {
       "name": "issue-planner",
@@ -244,7 +248,11 @@
       "name": "issue-implementer",
       "enabled": true,
       "generatedAt": "2026-02-22T17:40:44.677Z",
-      "files": []
+      "files": [
+        ".codefactory/prompts/issue-implementer.md",
+        ".github/workflows/issue-implementer.yml",
+        "scripts/issue-implementer-guard.ts"
+      ]
     },
     {
       "name": "skills-installer",

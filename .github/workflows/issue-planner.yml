@@ -1,4 +1,5 @@
 name: Issue Planner Agent
+
 on:
   issues:
     types: [labeled]
@@ -8,14 +9,17 @@ on:
         description: 'Issue number to plan'
         required: true
         type: string
+
 permissions:
   issues: write
   contents: read
   actions: write
   id-token: write
+
 concurrency:
   group: issue-planner-${{ github.event.issue.number || inputs.issue_number }}
   cancel-in-progress: true
+
 jobs:
   plan:
     name: Planner Agent
@@ -26,13 +30,16 @@ jobs:
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           fetch-depth: 1
+
       - name: Setup Node.js
         uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af
         with:
           node-version: 22
           cache: npm
+
       - name: Install dependencies
         run: npm ci
+
       - name: Fetch issue JSON (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
         id: fetch-issue
@@ -48,6 +55,7 @@ jobs:
             echo "ISSUE_EOF"
           } >> "$GITHUB_OUTPUT"
           echo "Fetched issue #${ISSUE_NUM}"
+
       - name: Run planner guard
         id: guard
         env:
@@ -70,10 +78,12 @@ jobs:
           echo "issue-number=${ISSUE_NUM}" >> "$GITHUB_OUTPUT"
           echo "issue-title=${ISSUE_TITLE}" >> "$GITHUB_OUTPUT"
           echo "Guard: shouldPlan=${SHOULD}, issue=#${ISSUE_NUM}"
+
       - name: Skip — log reason
         if: steps.guard.outputs.should-plan == 'false'
         run: |
           echo "::notice::Planning skipped: ${{ steps.guard.outputs.reason }}"
+
       - name: Ensure planner labels exist
         if: steps.guard.outputs.should-plan == 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
@@ -96,6 +106,7 @@ jobs:
                 // Label exists
               }
             }
+
       - name: Read planner prompt
         if: steps.guard.outputs.should-plan == 'true'
         id: prompt-file
@@ -109,6 +120,7 @@ jobs:
           else
             echo "content=Analyze this issue and produce a structured implementation plan." >> "$GITHUB_OUTPUT"
           fi
+
       - name: Build planning prompt
         if: steps.guard.outputs.should-plan == 'true'
         id: build-prompt
@@ -125,6 +137,7 @@ jobs:
             try { conventions = fs.readFileSync('KIRO.md', 'utf-8').slice(0, 6000); } catch {}
             let config = '';
             try { config = fs.readFileSync('harness.config.json', 'utf-8'); } catch {}
+
             const prompt = [
               template,
               '',
@@ -144,12 +157,14 @@ jobs:
               '',
               '## Harness Configuration',
               '',
-              'json',
-             config || '{}',
-             '',
+              '```json',
+              config || '{}',
+              '```',
             ].join('\n');
+
             core.setOutput('prompt', prompt);
-            core.info(Planning prompt built (${prompt.length} chars));
+            core.info(`Planning prompt built (${prompt.length} chars)`);
+
       - name: Configure AWS credentials
         if: steps.guard.outputs.should-plan == 'true'
         continue-on-error: true
@@ -159,11 +174,13 @@ jobs:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
+
       - name: Setup Kiro CLI
         if: steps.guard.outputs.should-plan == 'true'
         uses: clouatre-labs/setup-kiro-action@v1
         with:
           enable-sigv4: 'true'
+
       - name: Authenticate Kiro CLI
         if: steps.guard.outputs.should-plan == 'true'
         env:
@@ -241,6 +258,7 @@ jobs:
             "$KIRO_CLIENT_ID" "$KIRO_CLIENT_SECRET" "$AWS_REGION" \
             "$KIRO_START_URL" "$CLIENT_EXPIRES" "$KIRO_PROFILE_ARN"
           kiro-cli-chat whoami
+
       - name: Run AI planning analysis
         if: steps.guard.outputs.should-plan == 'true'
         id: ai-plan
@@ -255,6 +273,7 @@ jobs:
             echo "$CLEAN"
             echo "KIRO_OUTPUT_EOF"
           } >> "$GITHUB_OUTPUT"
+
       - name: Extract plan output
         if: steps.guard.outputs.should-plan == 'true'
         id: extract-plan
@@ -272,8 +291,9 @@ jobs:
               echo "PLAN_EOF"
             } >> "$GITHUB_OUTPUT"
             echo "found=true" >> "$GITHUB_OUTPUT"
-            echo "✔ Extracted plan ($(echo "$PLAN_TEXT" | wc -c) chars)"
+            echo "Extracted plan ($(echo "$PLAN_TEXT" | wc -c) chars)"
           fi
+
       - name: Post plan comment and dispatch implementer
         if: steps.guard.outputs.should-plan == 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
@@ -286,27 +306,31 @@ jobs:
             const issueNumber = parseInt(process.env.ISSUE_NUMBER, 10);
             const planFound = process.env.PLAN_FOUND === 'true';
             const planOutput = (planFound && process.env.PLAN_TEXT) ? process.env.PLAN_TEXT : '*No plan output received.*';
+
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               body: [
-                <!-- issue-planner: #${issueNumber} -->,
-                '📋 **Implementation Plan**',
+                `<!-- issue-planner: #${issueNumber} -->`,
+                '## Implementation Plan',
                 '',
                 planOutput,
                 '',
                 '---',
-                '*🤖 Issue Planner Agent — automated implementation planning*',
+                '*Issue Planner Agent — automated implementation planning.*',
               ].join('\n'),
             });
+
             await github.rest.issues.addLabels({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: issueNumber,
               labels: ['agent:implement'],
             });
-            core.info(Plan posted and agent:implement label added for issue #${issueNumber});
+
+            core.info(`Plan posted and agent:implement label added for issue #${issueNumber}`);
+
       - name: Dispatch implementer workflow
         if: steps.guard.outputs.should-plan == 'true'
         env:
@@ -315,7 +339,8 @@ jobs:
         run: |
           echo "Dispatching implementer for issue #${ISSUE_NUMBER}..."
           gh workflow run issue-implementer.yml --field issue_number="${ISSUE_NUMBER}"
-          echo "✔ Implementer workflow dispatched"
+          echo "Implementer workflow dispatched"
+
       - name: Failure handler
         if: failure() && steps.guard.outputs.should-plan == 'true'
         uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea
@@ -344,18 +369,15 @@ jobs:
               repo: context.repo.repo,
               issue_number: issueNumber,
               body: [
-                <!-- issue-planner-failed: #${issueNumber} -->,
-                '❌ **Planner Agent Failed**',
+                `<!-- issue-planner-failed: #${issueNumber} -->`,
+                '## Planner Agent Failed',
                 '',
                 'The planning agent encountered an error while analyzing this issue.',
                 'A human should review the failure and decide next steps.',
                 '',
-                **Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}),
+                `**Run**: [${context.runId}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
                 '',
                 '---',
-                '*🤖 Issue Planner Agent — automated implementation planning*',
+                '*Issue Planner Agent — automated implementation planning.*',
               ].join('\n'),
             });
-
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
