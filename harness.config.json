@@ -1,0 +1,258 @@
+{
+  "version": "1.0.0",
+  "riskTiers": {
+    "tier1": {
+      "name": "low",
+      "description": "Documentation, comments, and non-code changes",
+      "patterns": [
+        "**/*.md",
+        "docs/**",
+        ".github/**/*.md",
+        "CHANGELOG.md",
+        "LICENSE"
+      ],
+      "requiredChecks": [
+        "lint"
+      ],
+      "mergePolicy": {
+        "minApprovals": 0,
+        "requireReviewAgent": false,
+        "allowSelfMerge": true
+      },
+      "evidenceRequirements": []
+    },
+    "tier2": {
+      "name": "medium",
+      "description": "Business logic, features, and refactors",
+      "patterns": [
+        "src/**/*.ts",
+        "tests/**/*.ts",
+        "vitest.config.ts"
+      ],
+      "requiredChecks": [
+        "lint",
+        "type-check",
+        "test",
+        "build"
+      ],
+      "mergePolicy": {
+        "minApprovals": 1,
+        "requireReviewAgent": true,
+        "allowSelfMerge": false
+      },
+      "evidenceRequirements": [
+        "tests-pass",
+        "lint-clean",
+        "type-check-clean"
+      ]
+    },
+    "tier3": {
+      "name": "high",
+      "description": "Critical paths and infrastructure",
+      "patterns": [
+        "src/index.ts",
+        "package.json",
+        "tsconfig.json",
+        "eslint.config.js"
+      ],
+      "requiredChecks": [
+        "lint",
+        "type-check",
+        "test",
+        "build",
+        "structural-tests",
+        "manual-approval"
+      ],
+      "mergePolicy": {
+        "minApprovals": 2,
+        "requireReviewAgent": true,
+        "allowSelfMerge": false
+      },
+      "evidenceRequirements": [
+        "tests-pass",
+        "lint-clean",
+        "type-check-clean",
+        "manual-review"
+      ]
+    }
+  },
+  "commands": {
+    "test": "npm test",
+    "build": "npm run build",
+    "lint": "npm run lint",
+    "typeCheck": "npm run typecheck"
+  },
+  "docsDrift": {
+    "trackedDocs": [
+      "README.md"
+    ],
+    "maxStaleDays": 14,
+    "requireUpdateWithCodeChange": false,
+    "exemptPatterns": [
+      "tests/**",
+      "**/*.test.ts",
+      "**/*.spec.ts"
+    ]
+  },
+  "shaDiscipline": {
+    "enforceExactSha": true,
+    "rejectStaleReviews": true
+  },
+  "evidenceConfig": {
+    "screenshotDir": ".harness/evidence",
+    "retentionDays": 30,
+    "requiredForUI": false,
+    "browserTool": "playwright"
+  },
+  "architecturalBoundaries": {},
+  "monorepo": {
+    "enabled": false,
+    "packages": [],
+    "sharedChecks": []
+  },
+  "repoRoot": ".",
+  "aiPlatform": "kiro",
+  "detection": {
+    "primaryLanguage": "TypeScript",
+    "framework": null,
+    "packageManager": "npm",
+    "ciProvider": null,
+    "monorepo": false
+  },
+  "harnesses": [
+    {
+      "name": "risk-contract",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        "harness.config.json"
+      ]
+    },
+    {
+      "name": "claude-md",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".mcp.json",
+        "KIRO.md"
+      ]
+    },
+    {
+      "name": "docs-structure",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        "docs/architecture.md",
+        "docs/conventions.md",
+        "docs/layers.md"
+      ]
+    },
+    {
+      "name": "pre-commit-hooks",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".husky/pre-commit",
+        ".lintstagedrc.json"
+      ]
+    },
+    {
+      "name": "risk-policy-gate",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/workflows/risk-policy-gate.yml",
+        "RISK_GATE_SETUP.md",
+        "scripts/risk-policy-gate.sh",
+        "scripts/risk-policy-gate.ts"
+      ]
+    },
+    {
+      "name": "ci-pipeline",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/workflows/ci.yml",
+        ".github/workflows/harness-smoke.yml",
+        ".github/workflows/structural-tests.yml",
+        "scripts/structural-tests.sh"
+      ]
+    },
+    {
+      "name": "review-agent",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/workflows/code-review-agent.yml"
+      ]
+    },
+    {
+      "name": "remediation-loop",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/workflows/remediation-agent.yml",
+        "scripts/remediation-agent-prompt.md",
+        "scripts/remediation-guard.ts"
+      ]
+    },
+    {
+      "name": "pr-templates",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/PULL_REQUEST_TEMPLATE.md",
+        ".github/PULL_REQUEST_TEMPLATE/agent-pr.md"
+      ]
+    },
+    {
+      "name": "garbage-collection",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/workflows/doc-gardening.yml",
+        "scripts/doc-gardening-prompt.md"
+      ]
+    },
+    {
+      "name": "incident-harness-loop",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".github/ISSUE_TEMPLATE/harness-gap.md",
+        ".github/workflows/weekly-metrics.yml",
+        "docs/harness-gaps.md"
+      ]
+    },
+    {
+      "name": "issue-triage",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": []
+    },
+    {
+      "name": "issue-planner",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": [
+        ".codefactory/prompts/issue-planner.md",
+        ".github/workflows/issue-planner.yml",
+        "scripts/issue-planner-guard.ts"
+      ]
+    },
+    {
+      "name": "issue-implementer",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": []
+    },
+    {
+      "name": "skills-installer",
+      "enabled": true,
+      "generatedAt": "2026-02-22T17:40:44.677Z",
+      "files": []
+    }
+  ],
+  "generatedAt": "2026-02-22T17:40:44.677Z",
+  "lastUpdated": "2026-02-22T17:40:44.677Z"
+}

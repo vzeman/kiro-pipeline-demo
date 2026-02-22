@@ -7,7 +7,10 @@
     "build": "tsc",
     "test": "vitest run",
     "lint": "eslint src/",
-    "prepare": "husky"
+    "prepare": "husky",
+    "harness:smoke": "npx tsx scripts/harness-smoke.ts",
+    "harness:risk-tier": "npx tsx scripts/risk-policy-gate.ts",
+    "harness:weekly-metrics": "npx tsx scripts/harness-weekly-metrics.ts"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
