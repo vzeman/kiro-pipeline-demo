@@ -9,6 +9,14 @@ describe('capitalize', () => {
   it('returns empty string unchanged', () => {
     expect(capitalize('')).toBe('');
   });
+
+  it('leaves already capitalized string unchanged', () => {
+    expect(capitalize('A')).toBe('A');
+  });
+
+  it('capitalizes only the first letter of multi-word string', () => {
+    expect(capitalize('hello world')).toBe('Hello world');
+  });
 });
 
 describe('slugify', () => {
