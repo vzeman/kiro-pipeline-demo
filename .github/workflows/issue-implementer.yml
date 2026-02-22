@@ -408,11 +408,12 @@ jobs:
           BUILD: ${{ steps.gates.outputs.build }}
           REGRESSIONS: ${{ steps.gates.outputs.regressions }}
           FILE_COUNT: ${{ steps.changes.outputs.file-count }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "feat: implement #${ISSUE_NUMBER} — ${ISSUE_TITLE}"
+          git commit -m "feat: implement #${ISSUE_NUMBER} — ${ISSUE_TITLE}" || true
           git push origin "${BRANCH}"
 
           LINT_STATUS=$([[ "$LINT" == "true" ]] && echo "PASS" || echo "FAIL")
@@ -425,11 +426,13 @@ jobs:
             "$LINT_STATUS" "$TYPE_STATUS" "$TEST_STATUS" "$BUILD_STATUS" \
             "$FILE_COUNT" "$ISSUE_NUMBER")
 
+          echo "Creating PR for branch ${BRANCH}..."
           PR_URL=$(gh pr create \
             --title "feat: ${ISSUE_TITLE}" \
             --body "$BODY" \
             --label "agent-pr" \
-            --head "${BRANCH}" 2>&1)
+            --head "${BRANCH}" \
+            --base "${DEFAULT_BRANCH:-main}")
 
           echo "pr-url=${PR_URL}" >> "$GITHUB_OUTPUT"
           echo "PR created: ${PR_URL}"
