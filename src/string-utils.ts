@@ -17,9 +17,10 @@ export function slugify(str: string): string {
 }
 
 /**
- * Truncate a string to a maximum length, adding ellipsis if truncated.
+ * Truncate a string to a maximum length with an optional suffix.
  */
-export function truncate(str: string, maxLength: number): string {
-  if (str.length <= maxLength) return str;
-  return str.slice(0, maxLength - 3) + '...';
+export function truncate(str: string, maxLength: number, suffix = '...'): string {
+  if (!str) return str;
+  if (str.length <= maxLength - suffix.length) return str;
+  return str.slice(0, maxLength - suffix.length) + suffix;
 }
