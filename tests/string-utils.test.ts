@@ -22,11 +22,19 @@ describe('slugify', () => {
 });
 
 describe('truncate', () => {
-  it('truncates long strings', () => {
-    expect(truncate('Hello World', 8)).toBe('Hello...');
+  it('truncates with default suffix', () => {
+    expect(truncate('Hello World', 5)).toBe('He...');
   });
 
   it('leaves short strings unchanged', () => {
     expect(truncate('Hi', 10)).toBe('Hi');
+  });
+
+  it('truncates with custom suffix', () => {
+    expect(truncate('Hello', 5, '~')).toBe('Hell~');
+  });
+
+  it('handles empty string', () => {
+    expect(truncate('', 5)).toBe('');
   });
 });
